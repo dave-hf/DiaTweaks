@@ -54,6 +54,7 @@ static void DPListenForScripts(void) {
 void DPInstallDevTools(void) {
     if (![[[NSUserDefaults alloc] initWithSuiteName:@"com.diapatches"] boolForKey:@"devTools"]) return;
     DPListenForScripts();
+    DPInstallInspect();
     DPOnLaunch(^{
         DPAddMenuItem(@"Help", @"DiaPatches: Copy View Tree", ^{ DPCopyViewTree(); });
         NSMenu *debug = [[NSMenu alloc] initWithTitle:@"Debug"];
