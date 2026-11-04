@@ -116,6 +116,7 @@ void DPHandOffAndQuit(NSArray<NSString *> *args) {
 
 - (double)progress:(NSString *)part {
     if ([_pretend[part] isKindOfClass:NSDate.class]) return MIN(-[_pretend[part] timeIntervalSinceNow] / 3, 1);
+    if ([self.found[part][@"source"] boolValue]) return -1;  // merging and building a fork's checkout: nothing to measure
     NSString *file = [[NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject
         stringByAppendingPathComponent:@"DiaPatches"] stringByAppendingPathComponent:[part isEqual:DPDia] ? @"download/Dia.zip" : @"release/DiaTweaks.zip"];
     double size = [self.found[part][@"size"] doubleValue];
@@ -194,7 +195,10 @@ static void DPShowUpdateAlert(void) {
             [parts addObject:part];
             // What's staged can differ from the feed's latest after Dia switches between stable and Early Birds.
             NSString *version = updates.found[part][[updates staged:part] ? @"staged" : @"latest"];
-            [names addObject:[NSString stringWithFormat:@"%@ %@", DPPartName(part), version]];
+            NSUInteger changes = [updates.found[part][@"changes"] isKindOfClass:NSArray.class] ? [updates.found[part][@"changes"] count] : 0;
+            [names addObject:changes && ![updates staged:part]
+                ? [NSString stringWithFormat:@"%lu DiaTweaks change%@", changes, changes == 1 ? @"" : @"s"]
+                : [NSString stringWithFormat:@"%@ %@", DPPartName(part), version]];
         }
         NSAlert *alert = [NSAlert new];
         if (!parts.count) {

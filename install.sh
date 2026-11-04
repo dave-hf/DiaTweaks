@@ -35,12 +35,31 @@ fi
 rm -rf "$incoming"
 mkdir -p "$incoming" "$support/bin"
 cp build/diapatch build/DiaPatches.dylib build/patches.json ${cli:+"$cli"} "$incoming/"
+
+# A fork's checkout (one with an `upstream` remote) updates itself from upstream in Settings, so it records where it is
+# and which commit this is. Anything else updates from DiaTweaks' releases.
+fork=
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git remote get-url upstream >/dev/null 2>&1; then
+    fork=1
+    plutil -create xml1 "$incoming/source.plist"
+    plutil -insert path -string "$PWD" "$incoming/source.plist"
+    plutil -insert remote -string upstream "$incoming/source.plist"
+    plutil -insert branch -string "${DIATWEAKS_UPSTREAM_BRANCH:-main}" "$incoming/source.plist"
+    commit=$(git rev-parse HEAD)
+    plutil -create xml1 "$incoming/release.plist"
+    plutil -insert commit -string "$commit" "$incoming/release.plist"
+    plutil -insert tag -string "$(printf %.7s "$commit")" "$incoming/release.plist"
+    plutil -insert branch -string "$(git symbolic-ref -q --short HEAD || echo detached)" "$incoming/release.plist"
+    plutil -insert dirty -bool "$([ -n "$(git status --porcelain --untracked-files=no)" ] && echo YES || echo NO)" "$incoming/release.plist"
+fi
 # Each rename is atomic, and Ctrl-C waits until all are done, so the installed files always come from one build.
 trap 'interrupted=1' INT TERM
 (
     trap '' INT TERM
     mv -f "$incoming/diapatch" ${cli:+"$incoming/diatweaks"} "$support/bin/"
-    mv -f "$incoming/DiaPatches.dylib" "$incoming/patches.json" "$support/"
+    mv -f "$incoming/DiaPatches.dylib" "$incoming/patches.json" ${fork:+"$incoming/source.plist" "$incoming/release.plist"} "$support/"
+    # What's staged was built before this, and would replace it when Dia quits.
+    if [ -n "$fork" ]; then rm -rf "$support/staged/DiaTweaks" "$support/source-problem.plist"; else rm -f "$support/source.plist"; fi
 )
 [ -z "${interrupted-}" ] || exit 130
 trap 'exit 130' INT TERM

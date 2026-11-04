@@ -1,4 +1,5 @@
 #import "Settings.h"
+#import "Settings/SourceUpdate.h"
 
 // App icons carry their own margin, so Dia's is drawn larger than the tile to look the same size.
 static NSView *DPPartIcon(NSString *part) {
@@ -59,7 +60,7 @@ static NSButton *DPButton(NSString *title, id target, SEL action, NSString *part
     DPUpdates *updates = DPUpdates.shared;
     NSMutableString *shape = [NSMutableString stringWithFormat:@"%d %d", updates.checking, updates.found != nil];
     for (NSString *part in self.shown)
-        [shape appendFormat:@" %@:%@:%@:%d", part, [self stateOf:part], updates.found[part][@"latest"], [updates failed:part]];
+        [shape appendFormat:@" %@:%@:%@:%d:%@", part, [self stateOf:part], updates.found[part][@"latest"], [updates failed:part], updates.found[part][@"problem"]];
     for (NSString *part in @[DPDia, DPTweaks]) [shape appendFormat:@"%ld", DPAutoLevelOf(part)];
     if (![shape isEqual:_shape]) {
         _shape = shape;
@@ -71,7 +72,7 @@ static NSButton *DPButton(NSString *title, id target, SEL action, NSString *part
         bar.indeterminate = progress < 0;
         if (progress < 0) [bar startAnimation:nil];
         else bar.doubleValue = progress;
-        [_details objectForKey:part].stringValue = progress < 0 ? @"Preparing…"
+        [_details objectForKey:part].stringValue = progress < 0 ? (DPIsSource(updates.found[part]) ? @"Merging and building…" : @"Preparing…")
             : [NSString stringWithFormat:@"Downloading… %.0f%%", progress * 100];
     }
 }
@@ -113,6 +114,10 @@ static NSButton *DPButton(NSString *title, id target, SEL action, NSString *part
         for (NSString *part in @[DPDia, DPTweaks]) {
             id version = updates.found[part][@"installed"];
             NSString *text = [version isKindOfClass:NSString.class] ? version : [part isEqual:DPDia] ? @"—" : @"Development build";
+            if (DPIsSource(updates.found[part])) {
+                [installed addObjectsFromArray:DPSourceInstalledRows(updates.found[part])];
+                continue;
+            }
             [installed addObject:DPRow(DPLine(DPPartName(part), 13, NSColor.labelColor), DPLine(text, 13, NSColor.secondaryLabelColor))];
         }
         [views addObjectsFromArray:@[DPHeader(@"Installed"), DPGroup(installed)]];
@@ -127,8 +132,9 @@ static NSButton *DPButton(NSString *title, id target, SEL action, NSString *part
         menu.target = self;
         menu.action = @selector(automaticChanged:);
         menu.accessibilityLabel = [DPPartName(part) stringByAppendingString:@" updates"];
-        NSString *does = @[@"Only checks when you open this page", @"Checks when Dia opens and lists it here",
-                           @"Downloads it, then you choose when to install", @"Downloads it and installs when you quit Dia"][DPAutoLevelOf(part)];
+        NSString *does = DPIsSource(updates.found[part]) ? DPSourceAutoText(DPAutoLevelOf(part))
+            : @[@"Only checks when you open this page", @"Checks when Dia opens and lists it here",
+                @"Downloads it, then you choose when to install", @"Downloads it and installs when you quit Dia"][DPAutoLevelOf(part)];
         NSView *text = DPColumn(@[DPLine(DPPartName(part), 13, NSColor.labelColor), DPLine(does, 11, NSColor.secondaryLabelColor)], 2);
         [automatic addObject:DPRow(text, menu)];
     }
@@ -138,9 +144,43 @@ static NSButton *DPButton(NSString *title, id target, SEL action, NSString *part
     [self setCustomSpacing:14 afterView:views.firstObject];
 }
 
+- (NSProgressIndicator *)barFor:(NSString *)part detail:(NSTextField *)detail {
+    NSProgressIndicator *bar = [NSProgressIndicator new];
+    bar.style = NSProgressIndicatorStyleBar;
+    bar.indeterminate = NO;
+    bar.maxValue = 1;
+    [bar.widthAnchor constraintEqualToConstant:140].active = YES;
+    [_bars setObject:bar forKey:part];
+    [_details setObject:detail forKey:part];
+    return bar;
+}
+
+// A fork's checkout: one Update Now merges and builds, so there's no separate Download.
+- (NSView *)sourceGroupFor:(NSString *)part {
+    DPUpdates *updates = DPUpdates.shared;
+    NSString *state = [self stateOf:part];
+    NSButton *button = [state isEqual:@"staged"] ? DPButton(@"Relaunch", self, @selector(relaunch:), part)
+        : DPButton([updates failed:part] ? @"Try Again" : @"Update Now", self, @selector(updateNow:), part);
+    NSView *placeholder = [NSView new];
+    NSTextField *detail;
+    NSView *group = DPSourceGroup(updates.found[part], state, [updates failed:part], DPAutoLevelOf(part) == DPAutoInstall,
+                                  [state isEqual:@"downloading"] ? placeholder : button, &detail);
+    if ([state isEqual:@"downloading"]) {
+        NSProgressIndicator *bar = [self barFor:part detail:detail];
+        bar.translatesAutoresizingMaskIntoConstraints = NO;
+        [placeholder addSubview:bar];
+        [NSLayoutConstraint activateConstraints:@[
+            [bar.leadingAnchor constraintEqualToAnchor:placeholder.leadingAnchor], [bar.trailingAnchor constraintEqualToAnchor:placeholder.trailingAnchor],
+            [bar.topAnchor constraintEqualToAnchor:placeholder.topAnchor], [bar.bottomAnchor constraintEqualToAnchor:placeholder.bottomAnchor],
+        ]];
+    }
+    return group;
+}
+
 - (NSView *)groupFor:(NSString *)part {
     DPUpdates *updates = DPUpdates.shared;
     NSDictionary *found = updates.found[part];
+    if (DPIsSource(found)) return [self sourceGroupFor:part];
     NSString *state = [self stateOf:part];
     BOOL installsOnQuit = DPAutoLevelOf(part) == DPAutoInstall;
     NSString *size = [NSByteCountFormatter stringFromByteCount:[found[@"size"] longLongValue] countStyle:NSByteCountFormatterCountStyleFile];
@@ -155,14 +195,7 @@ static NSButton *DPButton(NSString *title, id target, SEL action, NSString *part
 
     NSView *trailing;
     if ([state isEqual:@"downloading"]) {
-        NSProgressIndicator *bar = [NSProgressIndicator new];
-        bar.style = NSProgressIndicatorStyleBar;
-        bar.indeterminate = NO;
-        bar.maxValue = 1;
-        [bar.widthAnchor constraintEqualToConstant:140].active = YES;
-        [_bars setObject:bar forKey:part];
-        [_details setObject:detail forKey:part];
-        trailing = bar;
+        trailing = [self barFor:part detail:detail];
     } else if ([state isEqual:@"staged"]) {
         trailing = DPButton(@"Relaunch", self, @selector(relaunch:), part);
     } else {

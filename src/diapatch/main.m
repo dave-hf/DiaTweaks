@@ -5,6 +5,7 @@
 #import <Foundation/Foundation.h>
 #import "Passkeys.h"
 #import "Passwords.h"
+#import "Source.h"
 #include <libproc.h>
 #include <mach-o/loader.h>
 #include <sys/clonefile.h>
@@ -463,17 +464,35 @@ static BOOL stageTweaks(void) {
     return ok && say(@"DiaTweaks %@ is ready to install", latest[@"tag"]);
 }
 
+// A fork's checkout: merge upstream into it and build it instead of downloading a release.
+static BOOL stageSource(void) {
+    NSString *building = [gStagedTweaks stringByAppendingString:@".building"], *problem;
+    if (!removeTree(building) || !makeDir(building)) return NO;
+    note(@"updating DiaTweaks from %@", DPSourceOf(gHome)[@"path"]);
+    NSDictionary *release = DPSourceBuild(gHome, building, &problem);
+    BOOL ok = (release || fail(@"%@", problem)) && unquarantine(building)
+        && ([release writeToFile:[building stringByAppendingPathComponent:@"release.plist"] atomically:YES] || fail(@"cannot write release.plist"))
+        && removeTree(gStagedTweaks) && moveBundle(building, gStagedTweaks);
+    removeTree(building);
+    return ok && say(@"DiaTweaks %@ is ready to install", release[@"tag"]);
+}
+
 static BOOL applyTweaks(void) {
     // A release staged a while ago may since have been replaced, or overtaken by what's installed.
     NSString *problem;
-    NSDictionary *latest = stagedRelease() ? latestTweaks(15, &problem) : nil;
+    BOOL source = DPSourceOf(gHome) != nil;
+    NSDictionary *latest = stagedRelease() && !source ? latestTweaks(15, &problem) : nil;
     if ([installedRelease()[@"digest"] isEqual:latest[@"digest"]]) removeTree(gStagedTweaks);
     else if (tweaksAvailable(latest)) stageTweaks();  // if this fails, the staged release still installs
     NSString *tag = stagedRelease()[@"tag"];
     if (!tag) return removeTree(gStagedTweaks);
     NSDictionary<NSString *, NSString *> *targets = tweaksTargets();
     BOOL ok = makeDir(inHome(@"bin")) && unquarantine(gStagedTweaks);
-    for (NSString *name in targets) ok = ok && moveBundle([gStagedTweaks stringByAppendingPathComponent:name], targets[name]);
+    for (NSString *name in targets) {
+        NSString *file = [gStagedTweaks stringByAppendingPathComponent:name];
+        if (source && !exists(file)) continue;  // built without Rust, so without the diatweaks command
+        ok = ok && moveBundle(file, targets[name]);
+    }
     ok = ok && moveBundle([gStagedTweaks stringByAppendingPathComponent:@"release.plist"], inHome(@"release.plist"));
     return ok && removeTree(gStagedTweaks) && say(@"installed DiaTweaks %@", tag);
 }
@@ -597,7 +616,7 @@ static BOOL purge(void) {
         if (!removeTree(link)) return NO;
         say(@"deleted %@", link);
     }
-    for (NSString *name in @[ @"bin", @DYLIB, @"patches.json", @"release.plist", @"pristine", @"staged", @"identity", @"diapatch.log", @"safe-mode.plist",
+    for (NSString *name in @[ @"bin", @DYLIB, @"patches.json", @"release.plist", @"source.plist", @"source-problem.plist", @"pristine", @"staged", @"identity", @"diapatch.log", @"safe-mode.plist",
                               @".diatweaks.lock", @".incoming", @"passwords-helper", @"passwords.sock", @"onepassword.sock", @"passwords-launch" ])
         if (!discard(inHome(name))) return NO;
     for (NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:gHome error:NULL])
@@ -654,7 +673,8 @@ static BOOL status(BOOL json) {
 static BOOL checkUpdates(void) {
     NSString *channel, *problem, *tweaksProblem;
     Release *dia = latest(15, &channel, &problem);
-    NSDictionary *tweaks = latestTweaks(15, &tweaksProblem);
+    NSDictionary *source = DPSourceOf(gHome);
+    NSDictionary *tweaks = source ? nil : latestTweaks(15, &tweaksProblem);
     BOOL diaStaged = stagedReady() && [buildOf(gStaged) isEqual:dia.build];
     NSDictionary *result = @{
         @"dia" : @{
@@ -666,7 +686,7 @@ static BOOL checkUpdates(void) {
             @"available" : @((BOOL)(dia && newer(dia.build, buildOf(gPristine)) && !diaStaged)),
             @"error" : dia ? NSNull.null : problem,
         },
-        @"tweaks" : @{
+        @"tweaks" : source ? DPSourceCheck(gHome, installedRelease(), stagedRelease()) : @{
             @"installed" : installedRelease()[@"tag"] ?: NSNull.null,
             @"latest" : tweaks[@"tag"] ?: NSNull.null,
             @"size" : tweaks[@"size"] ?: @0,
@@ -688,7 +708,8 @@ static const char kUsage[] =
     "                   --relaunch quits a running Dia first and reopens it afterwards\n"
     "  build            rebuild the staged patched Dia from the pristine copy\n"
     "  update           download, verify and stage a newer Dia from your channel (stable or Early Birds)\n"
-    "  self-update      download, verify and stage the latest DiaTweaks release if it isn't the one installed\n"
+    "  self-update      download, verify and stage the latest DiaTweaks release if it isn't the one installed;\n"
+    "                   installed from a fork's checkout, merge its upstream into it and build it instead\n"
     "  apply [--wait PID] [--relaunch] [--dia] [--tweaks]\n"
     "                   install what's staged once PID and Dia have quit, then reopen Dia; --dia or --tweaks limits it\n"
     "  check --json     what's installed, available and staged for Dia and DiaTweaks\n"
@@ -756,7 +777,7 @@ int main(int argc, const char *argv[]) {
         BOOL ok = [command isEqualToString:@"install"] ? install([flags containsObject:@"--relaunch"]) && installAgent()
             : [command isEqualToString:@"build"]       ? build(gPristine) && say(@"staged patched Dia %@", versionOf(gStaged))
             : [command isEqualToString:@"update"]      ? update()
-            : [command isEqualToString:@"self-update"] ? stageTweaks()
+            : [command isEqualToString:@"self-update"] ? (DPSourceOf(gHome) ? stageSource() : stageTweaks())
             : [command isEqualToString:@"apply"]       ? applyChosen([flags containsObject:@"--dia"], [flags containsObject:@"--tweaks"])
                                                        : uninstall([flags containsObject:@"--purge"]);
         // open sometimes fails with -600 right after Dia quits itself.
