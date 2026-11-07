@@ -29,8 +29,10 @@ NSColor *DPProfileColor(NSString *spaceID) {
     return DPProfileColors.on && spaceID ? DPColorFromHex([DPColorDefaults() dictionaryForKey:DPColorsKey][spaceID]) : nil;
 }
 
+BOOL DPDiaHasIntensity(void) { return objc_getClass("_TtC16ThemeIntensityUI28ThemeIntensityViewController") != nil; }
+
 CGFloat DPProfileStrength(NSString *spaceID) {
-    return DPProfileColors.on && spaceID ? MIN(MAX([[DPColorDefaults() dictionaryForKey:DPStrengthsKey][spaceID] doubleValue], 0), 1) : 0;
+    return DPProfileColors.on && spaceID && !DPDiaHasIntensity() ? MIN(MAX([[DPColorDefaults() dictionaryForKey:DPStrengthsKey][spaceID] doubleValue], 0), 1) : 0;
 }
 
 static void DPSetEntry(NSString *key, NSString *spaceID, id value) {
@@ -70,7 +72,7 @@ DP_PATCH(DPProfileColors) {
     .order = 79,
     .defaultOn = YES,
     .title = @"Profile Colors",
-    .detail = @"Give a profile any color, not just Dia’s eight, and choose how strongly the window shows it. Set them in Settings › Profiles.",
+    .detail = @"Give a profile any color, not just Dia’s eight. Before Dia 1.56, also choose how strongly the window shows it. Set them in Settings › Profiles.",
     .symbol = @"paintpalette.fill paintpalette",
     .tint = @"systemPinkColor",
     .section = @"Sidebar & Tab Bar",

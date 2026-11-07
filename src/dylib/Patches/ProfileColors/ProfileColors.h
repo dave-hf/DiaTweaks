@@ -17,8 +17,10 @@
 
 extern DPPatch DPProfileColors;
 
+// Dia 1.56 has its own intensity knob for each profile's theme color, which then replaces Color Strength.
+BOOL DPDiaHasIntensity(void);
 NSColor *DPProfileColor(NSString *spaceID);       // The profile's own color, or nil for Dia's theme.
-CGFloat DPProfileStrength(NSString *spaceID);     // 0 is Dia's look, 1 the strongest.
+CGFloat DPProfileStrength(NSString *spaceID);     // 0 is Dia's look, 1 the strongest. Always 0 with Dia's knob.
 void DPSetProfileColor(NSString *spaceID, NSColor *color);
 void DPSetProfileStrength(NSString *spaceID, CGFloat strength);
 NSArray<NSColor *> *DPMoreProfileColors(void);    // The presets beside Dia's eight.

@@ -17,12 +17,6 @@ static NSString *DPSpaceOfWindow(NSWindow *window) {
     return items.count == 1 ? [items.allKeys.firstObject description] : nil;
 }
 
-static CGColorRef DPResolved(NSColor *color, NSView *view) {
-    __block CGColorRef resolved = NULL;
-    [view.effectiveAppearance performAsCurrentDrawingAppearance:^{ resolved = color.CGColor; }];
-    return resolved;
-}
-
 static NSColor *DPMix(NSColor *a, NSColor *b, CGFloat amount) {
     return [[a colorUsingColorSpace:NSColorSpace.sRGBColorSpace] blendedColorWithFraction:amount ofColor:[b colorUsingColorSpace:NSColorSpace.sRGBColorSpace]] ?: a;
 }
@@ -42,40 +36,71 @@ static BOOL DPIsDark(NSView *view) {
     return [[view.effectiveAppearance bestMatchFromAppearancesWithNames:@[ NSAppearanceNameAqua, NSAppearanceNameDarkAqua ]] isEqual:NSAppearanceNameDarkAqua];
 }
 
+// What Dia itself painted, intensity included (Dia 1.56 blends a profile's intensity into these layers): read off the
+// layer, or remembered while the layer still holds ours.
+static char DPDiaGradientKey, DPDiaBaseKey;
+
+// Dia's hue swapped for the profile's own, keeping how saturated, bright and opaque Dia made it.
+static NSColor *DPInHue(NSColor *dia, NSColor *custom) {
+    CGFloat h, s, b, a, dh, ds, db, da;
+    [[custom colorUsingColorSpace:NSColorSpace.sRGBColorSpace] getHue:&h saturation:&s brightness:&b alpha:&a];
+    [[dia colorUsingColorSpace:NSColorSpace.sRGBColorSpace] getHue:&dh saturation:&ds brightness:&db alpha:&da];
+    return [NSColor colorWithColorSpace:NSColorSpace.sRGBColorSpace hue:h saturation:MIN(ds, s) brightness:db alpha:da];
+}
+
 static void DPPaintGradient(NSView *gradientView) {
     NSString *space = DPSpaceOfWindow(gradientView.window);
     NSColor *custom = DPProfileColor(space);
     CGFloat strength = DPProfileStrength(space);
     CAGradientLayer *layer = (CAGradientLayer *)[gradientView safeSwiftValueForKey:@"gradientLayer"];
-    NSArray *dia = [gradientView safeSwiftValueForKey:@"colors"];
-    if ((!custom && strength == 0) || ![layer isKindOfClass:CAGradientLayer.class] || ![dia isKindOfClass:NSArray.class] || dia.count < 2) return;
-    NSColor *top = [NSColor colorWithCGColor:DPResolved(dia.firstObject, gradientView)], *bottom = [NSColor colorWithCGColor:DPResolved(dia.lastObject, gradientView)];
-    CGFloat alpha = bottom.alphaComponent;
+    if (![layer isKindOfClass:CAGradientLayer.class]) return;
+    NSArray *dia = DPDiaValue(layer, &DPDiaGradientKey, layer.colors);
+    if (dia.count < 2) return;
+    if (!custom && strength == 0) {
+        if (![layer.colors isEqual:dia]) layer.colors = dia;  // a color or strength was just cleared
+        return;
+    }
+    NSColor *top = [NSColor colorWithCGColor:(__bridge CGColorRef)dia.firstObject], *bottom = [NSColor colorWithCGColor:(__bridge CGColorRef)dia.lastObject];
+    CGFloat topAlpha = top.alphaComponent, bottomAlpha = bottom.alphaComponent;
     if (custom) {
         top = DPLightened(custom, 0.25);
         bottom = custom;
     }
-    alpha += strength * (1 - alpha);
-    layer.colors = @[ (__bridge id)[top colorWithAlphaComponent:alpha].CGColor, (__bridge id)[bottom colorWithAlphaComponent:alpha].CGColor ];
+    topAlpha += strength * (1 - topAlpha);
+    bottomAlpha += strength * (1 - bottomAlpha);
+    NSArray *ours = @[ (__bridge id)[top colorWithAlphaComponent:topAlpha].CGColor, (__bridge id)[bottom colorWithAlphaComponent:bottomAlpha].CGColor ];
+    layer.colors = ours;
+    DPOverride(layer, &DPDiaGradientKey, dia, ours);
 }
 
-// Toward a deep shade of the color in dark mode and a pale one in light mode, so strength shows in both.
+// Strength pulls the base toward a deep shade of the color in dark mode and a pale one in light mode. A custom color
+// takes over any hue Dia's intensity gave the base.
 static void DPPaintBase(NSView *base) {
     NSString *space = DPSpaceOfWindow(base.window);
     CGFloat strength = DPProfileStrength(space);
-    NSColor *dia = [base safeSwiftValueForKey:@"backgroundColor"];
-    if (strength == 0 || ![dia isKindOfClass:NSColor.class]) return;
-    NSColor *diaColor = [NSColor colorWithCGColor:DPResolved(dia, base)];
     NSColor *color = DPProfileColor(space);
-    if (!color) {
-        NSView *gradient = DPSubview(base.superview, DPDiaGradientView);
-        NSArray *colors = [gradient safeSwiftValueForKey:@"colors"];
-        color = [colors isKindOfClass:NSArray.class] && colors.count ? [NSColor colorWithCGColor:DPResolved(colors.lastObject, base)] : nil;
+    CALayer *layer = base.layer;
+    id current = (__bridge id)layer.backgroundColor;
+    id diaCG = DPDiaValue(layer, &DPDiaBaseKey, current);
+    if (!diaCG) return;
+    if (!color && strength == 0) {
+        if (![current isEqual:diaCG]) layer.backgroundColor = (__bridge CGColorRef)diaCG;
+        return;
     }
-    if (!color) return;
-    NSColor *target = DPIsDark(base) ? DPMix(color, NSColor.blackColor, 0.6) : DPMix(color, NSColor.whiteColor, 0.6);
-    CGFloat alpha = diaColor.alphaComponent + strength * 0.25;
-    base.layer.backgroundColor = [DPMix([diaColor colorWithAlphaComponent:1], target, strength * 0.85) colorWithAlphaComponent:alpha].CGColor;
+    NSColor *dia = [NSColor colorWithCGColor:(__bridge CGColorRef)diaCG];
+    if (!color) {
+        CAGradientLayer *gradient = [DPSubview(base.superview, DPDiaGradientView) safeSwiftValueForKey:@"gradientLayer"];
+        NSArray *colors = [gradient isKindOfClass:CAGradientLayer.class] ? DPDiaValue(gradient, &DPDiaGradientKey, gradient.colors) : nil;
+        color = colors.count ? [NSColor colorWithCGColor:(__bridge CGColorRef)colors.lastObject] : nil;
+    }
+    NSColor *painted = color ? DPInHue(dia, color) : dia;
+    if (strength > 0 && color) {
+        NSColor *target = DPIsDark(base) ? DPMix(color, NSColor.blackColor, 0.6) : DPMix(color, NSColor.whiteColor, 0.6);
+        painted = [DPMix([painted colorWithAlphaComponent:1], target, strength * 0.85) colorWithAlphaComponent:dia.alphaComponent + strength * 0.25];
+    }
+    id ours = (__bridge id)painted.CGColor;
+    layer.backgroundColor = (__bridge CGColorRef)ours;
+    DPOverride(layer, &DPDiaBaseKey, diaCG, ours);
 }
 
 static void DPGradient_updateLayer(NSView *self, SEL _cmd) {

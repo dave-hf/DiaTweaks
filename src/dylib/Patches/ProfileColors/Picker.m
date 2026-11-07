@@ -59,10 +59,25 @@ static const CGFloat DPSwatch = 26;  // Dia's 20-point swatches, 6 apart, with r
         preset = preset || swatch.selected;
     }
     self.swatches.lastObject.selected = custom && !preset;
+    for (DPColorSwatch *swatch in self.swatches)
+        DPSetHint(swatch, swatch.selected && DPDiaHasIntensity() ? @"Click again to adjust intensity" : swatch.color ? nil : @"Any color");
     for (NSView *option in self.picker.subviews.firstObject.subviews) option.needsDisplay = YES;  // Dia's ring hides while a color of ours is on
 }
 
+// Dia opens its intensity knob when its selected dot is clicked again; ours does the same through Dia's dot.
+- (BOOL)openDiaIntensity {
+    NSArray *buttons = [self.picker safeSwiftValueForKey:@"buttons"];
+    if (!DPDiaHasIntensity() || ![buttons isKindOfClass:NSArray.class]) return NO;
+    for (NSButton *button in buttons)
+        if ([[button safeSwiftValueForKey:@"isSelected"] boolValue] && [self.picker respondsToSelector:@selector(themeClicked:)]) {
+            [self.picker performSelector:@selector(themeClicked:) withObject:button];
+            return YES;
+        }
+    return NO;
+}
+
 - (void)pick:(DPColorSwatch *)swatch {
+    if (swatch.selected && [self openDiaIntensity]) return;
     if (swatch.color) {
         DPSetProfileColor(self.spaceID, swatch.color);
     } else {
@@ -145,12 +160,14 @@ static void DPAddColorRows(NSViewController *pane) {
     DPSet(picker, &DPSpaceKey, spaceID);
     DPSet(pane, &DPRowsKey, state);
 
-    NSSlider *slider = [NSSlider sliderWithValue:DPProfileStrength(spaceID) minValue:0 maxValue:1 target:state action:@selector(strengthChanged:)];
-    slider.continuous = YES;
-    [slider.widthAnchor constraintEqualToConstant:202].active = YES;
     NSUInteger index = [rows.arrangedSubviews indexOfObject:themeRow] + 1;
-    NSArray *added = @[ [NSBox new], DPColorRow(title, @"More Colors", DPSwatchGrid(state), 2 * DPSwatch + 16, 3),
-                        [NSBox new], DPColorRow(title, @"Color Strength", slider, 42, 0) ];
+    NSMutableArray *added = [@[ [NSBox new], DPColorRow(title, @"More Colors", DPSwatchGrid(state), 2 * DPSwatch + 16, 3) ] mutableCopy];
+    if (!DPDiaHasIntensity()) {  // Dia 1.56's knob does this, custom colors included
+        NSSlider *slider = [NSSlider sliderWithValue:DPProfileStrength(spaceID) minValue:0 maxValue:1 target:state action:@selector(strengthChanged:)];
+        slider.continuous = YES;
+        [slider.widthAnchor constraintEqualToConstant:202].active = YES;
+        [added addObjectsFromArray:@[ [NSBox new], DPColorRow(title, @"Color Strength", slider, 42, 0) ]];
+    }
     for (NSView *view in added) {
         if ([view isKindOfClass:NSBox.class]) ((NSBox *)view).boxType = NSBoxSeparator;
         [rows insertArrangedSubview:view atIndex:index++];
@@ -169,24 +186,42 @@ static void DPProfilePane_viewDidLoad(NSViewController *self, SEL _cmd) {
     if (DPProfileColors.on) DPAddColorRows(self);
 }
 
-// Choosing one of Dia's themes goes back to it.
+// Choosing another of Dia's themes goes back to Dia's colors. Clicking the selected one again only opens Dia's
+// intensity knob (1.56), which a custom color follows too.
 static void DPThemePicker_themeClicked(NSView *self, SEL _cmd, id sender) {
+    NSString *before = [[self safeSwiftValueForKey:@"selectedThemeName"] description];
     DPCallOriginal(DPThemePicker_themeClicked, self, sender);
     NSString *spaceID = DPSpaceOfPicker(self);
     if (!spaceID || !DPProfileColor(spaceID)) return;
+    if (DPDiaHasIntensity() && [[[self safeSwiftValueForKey:@"selectedThemeName"] description] isEqual:before]) return;
     DPSetProfileColor(spaceID, nil);
     for (NSResponder *next = self.nextResponder; next; next = next.nextResponder)
         if ([next isKindOfClass:NSViewController.class] && DPGet(next, &DPRowsKey)) [(DPColorRows *)DPGet(next, &DPRowsKey) sync];
 }
 
+// While a custom color is on, Dia's dot doesn't look selected: no ring, and no edit icon (1.56).
+static void DPHideDiaSelection(NSView *option) {
+    BOOL ours = DPProfileColor(DPSpaceOfPicker(option)) != nil;
+    CALayer *ring = [option safeSwiftValueForKey:@"$__lazy_storage_$_selectionRingLayer"];
+    if ([ring isKindOfClass:CALayer.class]) ring.hidden = ours;
+    NSView *edit = [option safeSwiftValueForKey:@"editIconView"];
+    NSNumber *shows = [option safeSwiftValueForKey:@"showsEditIcon"];
+    if ([edit isKindOfClass:NSView.class] && [shows isKindOfClass:NSNumber.class]) edit.hidden = ours || !shows.boolValue;
+}
+
 static void DPThemeOption_updateLayer(NSView *self, SEL _cmd) {
     DPCallOriginal(DPThemeOption_updateLayer, self);
-    CALayer *ring = [self safeSwiftValueForKey:@"$__lazy_storage_$_selectionRingLayer"];
-    if ([ring isKindOfClass:CALayer.class]) ring.hidden = DPProfileColor(DPSpaceOfPicker(self)) != nil;
+    DPHideDiaSelection(self);
+}
+
+static void DPThemeOption_layout(NSView *self, SEL _cmd) {
+    DPCallOriginal(DPThemeOption_layout, self);
+    DPHideDiaSelection(self);
 }
 
 void DPInstallProfileColorPicker(void) {
     DPHook(DPDiaProfilePane, @selector(viewDidLoad), (IMP)DPProfilePane_viewDidLoad);
     DPHook(DPDiaThemePicker, @selector(themeClicked:), (IMP)DPThemePicker_themeClicked);
     DPHook(DPDiaThemeOption, @selector(updateLayer), (IMP)DPThemeOption_updateLayer);
+    DPHook(DPDiaThemeOption, @selector(layout), (IMP)DPThemeOption_layout);
 }
