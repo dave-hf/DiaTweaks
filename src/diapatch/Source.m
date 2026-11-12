@@ -118,19 +118,24 @@ NSDictionary *DPSourceCheck(NSString *home, NSDictionary *installed, NSDictionar
     NSString *head = git(repo, @[ @"rev-parse", @"HEAD" ], 10), *tip = git(repo, @[ @"rev-parse", @"--verify", @"-q", ref ], 10);
     if (!head || !tip) return result[@"problem"] = [NSString stringWithFormat:@"%@ has no %@ to update from", shortPath(repo), ref], result;
 
-    NSArray *changes = lines(git(repo, @[ @"log", @"--no-merges", @"--format=%s", [NSString stringWithFormat:@"HEAD..%@", tip] ], 20));
-    // Commits made in the checkout since it was installed, which Update Now also builds.
+    // What the installed build lacks, by where it came from: upstream's commits, and the checkout's own (on no upstream
+    // branch). A merge made in the checkout but not built yet still lists upstream's commits as upstream's.
     NSString *was = installed[@"commit"];
-    NSArray *local = [was isKindOfClass:NSString.class] && git(repo, @[ @"cat-file", @"-e", [was stringByAppendingString:@"^{commit}"] ], 10)
-        ? lines(git(repo, @[ @"log", @"--no-merges", @"--format=%s", [NSString stringWithFormat:@"%@..HEAD", was] ], 20)) : @[];
+    BOOL known = [was isKindOfClass:NSString.class] && git(repo, @[ @"cat-file", @"-e", [was stringByAppendingString:@"^{commit}"] ], 10);
+    NSString *from = known ? was : head;
+    NSArray *changes = lines(git(repo, @[ @"log", @"--no-merges", @"--format=%s", [NSString stringWithFormat:@"%@..%@", from, tip] ], 20));
+    NSArray *local = known ? lines(git(repo, @[ @"log", @"--no-merges", @"--format=%s", [NSString stringWithFormat:@"%@..HEAD", was],
+                                                [@"^" stringByAppendingString:tip] ], 20)) : @[];
+    BOOL behind = [git(repo, @[ @"rev-list", @"--count", [NSString stringWithFormat:@"HEAD..%@", tip] ], 20) integerValue] > 0;
     BOOL newer = ![head isEqual:was] && ![head isEqual:staged[@"commit"]];
-    result[@"changes"] = changes;
-    result[@"local"] = local;
-    result[@"latest"] = [(changes.count ? tip : head) substringToIndex:7];
-    result[@"available"] = @((BOOL)(changes.count > 0 || newer));
+    BOOL available = behind || newer;
+    result[@"changes"] = available ? changes : @[];
+    result[@"local"] = available ? local : @[];
+    result[@"latest"] = [(behind ? tip : head) substringToIndex:7];
+    result[@"available"] = @(available);
     result[@"branch"] = git(repo, @[ @"symbolic-ref", @"-q", @"--short", @"HEAD" ], 10) ?: NSNull.null;
-    NSString *base = git(repo, @[ @"merge-base", @"HEAD", tip ], 10);
-    if (web && changes.count && base) result[@"releaseNotes"] = [NSString stringWithFormat:@"%@/compare/%@...%@", web, base, tip];
+    NSString *base = git(repo, @[ @"merge-base", from, tip ], 10);
+    if (web && changes.count && base && ![base isEqual:tip]) result[@"releaseNotes"] = [NSString stringWithFormat:@"%@/compare/%@...%@", web, base, tip];
 
     // A failed update stays explained until the checkout or upstream moves on.
     NSDictionary *failed = [NSDictionary dictionaryWithContentsOfFile:problemFile(home)];
