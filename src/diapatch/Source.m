@@ -172,7 +172,8 @@ static NSDictionary *build(NSDictionary *source, NSString *into, NSString **prob
     if (!built) return *problem = [NSString stringWithFormat:@"The build failed:\n%@", tail(output)], nil;
 
     // The diatweaks command needs Rust, which is optional, as in install.sh.
-    NSMutableArray *files = [@[ @"build/diapatch", @"build/DiaPatches.dylib", @"build/patches.json" ] mutableCopy];
+    // The same files as a release: what make builds, and the app icons install.sh copies from assets.
+    NSMutableArray *files = [@[ @"build/diapatch", @"build/DiaPatches.dylib", @"build/patches.json", @"assets/app-icons" ] mutableCopy];
     if (runIn(repo, @[ @"/usr/bin/env", @"cargo", @"build", @"--release", @"--quiet", @"--manifest-path", @"cli/Cargo.toml" ], 1800, NULL) == 0)
         [files addObject:@"cli/target/release/diatweaks"];
     for (NSString *file in files) {

@@ -2,8 +2,8 @@
 #import <dlfcn.h>
 #import <mach-o/loader.h>
 
-// A launch that neither lasts this long nor quits normally counts as a crash.
-static const int64_t DPSurviveSeconds = 15;
+// Shorter-lived launches that don't quit normally count as crashes. Long, since patches often crash on a first resize or new tab.
+static const int64_t DPSurviveSeconds = 180;
 
 NSInteger DPSafeMode;
 static NSURL *DPStateURL;
@@ -16,9 +16,31 @@ static NSString *DPBuildUUID(const struct mach_header_64 *header) {
     return @"";
 }
 
+// A launch that never got to survive only counts if macOS wrote a crash report for it. A kill, from a force quit or a script, leaves none.
+static BOOL DPCrashed(NSDictionary *state) {
+    NSDate *launched = state[@"launched"];
+    if (!launched) return YES;
+    NSString *prefix = [NSProcessInfo.processInfo.processName stringByAppendingString:@"-"];
+    NSString *pid = [NSString stringWithFormat:@"\"pid\" : %@,", state[@"pid"]];
+    NSURL *reports = [NSFileManager.defaultManager.homeDirectoryForCurrentUser URLByAppendingPathComponent:@"Library/Logs/DiagnosticReports"];
+    for (NSURL *url in [NSFileManager.defaultManager contentsOfDirectoryAtURL:reports includingPropertiesForKeys:@[NSURLContentModificationDateKey] options:0 error:nil]) {
+        NSDate *modified;
+        [url getResourceValue:&modified forKey:NSURLContentModificationDateKey error:nil];
+        if (![url.lastPathComponent hasPrefix:prefix] || ![url.pathExtension isEqual:@"ips"] || [modified compare:launched] != NSOrderedDescending) continue;
+        if ([[NSString stringWithContentsOfURL:url encoding:NSUTF8StringEncoding error:nil] containsString:pid]) return YES;
+    }
+    return NO;
+}
+
 static void DPSurvived(void) {
     if (![DPState[@"launching"] boolValue]) return;
     DPState[@"launching"] = @NO;
+    // Level 2 loads no Settings, so nothing in Dia can turn patches back on. A launch that survives it steps down to level 1, which can.
+    // Once per build: if level 1 crashes its way back to 2, that is where it stays.
+    if (DPSafeMode == 2 && ![DPState[@"steppedDown"] boolValue]) {
+        DPState[@"level"] = @1;
+        DPState[@"steppedDown"] = @YES;
+    }
     [DPState writeToURL:DPStateURL error:nil];
 }
 
@@ -26,14 +48,16 @@ void DPBeginLaunch(void) {
     Dl_info info;
     dladdr((const void *)DPBeginLaunch, &info);
     DPStateURL = [NSURL fileURLWithPath:[@(info.dli_fname).stringByDeletingLastPathComponent stringByAppendingPathComponent:@"safe-mode.plist"]];
-    // A new build of the dylib may be the fix, so it starts over.
+    // A new build may be the fix, so it starts over.
     NSString *build = DPBuildUUID(info.dli_fbase);
     NSDictionary *saved = [NSDictionary dictionaryWithContentsOfURL:DPStateURL error:nil];
     DPState = [saved[@"build"] isEqual:build] ? [saved mutableCopy] : [NSMutableDictionary dictionaryWithObject:build forKey:@"build"];
-    NSInteger crashes = [DPState[@"launching"] boolValue] ? [DPState[@"crashes"] integerValue] + 1 : 0;
+    NSInteger crashes = [DPState[@"crashes"] integerValue];
+    if ([DPState[@"launching"] boolValue]) crashes += DPCrashed(DPState);
+    else crashes = 0;
     DPSafeMode = [DPState[@"level"] integerValue];
     if (crashes == 2 && DPSafeMode < 2) DPSafeMode++, crashes = 0;
-    [DPState addEntriesFromDictionary:@{@"level": @(DPSafeMode), @"crashes": @(crashes), @"launching": @YES}];
+    [DPState addEntriesFromDictionary:@{@"level": @(DPSafeMode), @"crashes": @(crashes), @"launching": @YES, @"launched": NSDate.date, @"pid": @(getpid())}];
     [DPState writeToURL:DPStateURL error:nil];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, DPSurviveSeconds * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ DPSurvived(); });
     DPOnQuit(^{ DPSurvived(); });

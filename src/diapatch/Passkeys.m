@@ -4,10 +4,11 @@
 #import <spawn.h>
 #import <sys/file.h>
 #import <sys/wait.h>
+#import "LaunchServices.h"
 #import "Passkeys.h"
 
 extern char **environ;
-int responsibility_spawnattrs_setdisclaim(posix_spawnattr_t *attrs, int disclaim);  // private: macOS then asks about the copy, not Dia
+int responsibility_spawnattrs_setdisclaim(posix_spawnattr_t *attrs, int disclaim);  // private: macOS asks about the copy, not Dia
 
 static const int kSheetWidth = 480, kSheetHeight = 300;
 
@@ -252,6 +253,7 @@ int DPRunPasskeyHost(NSString *home) {
     send(@"Browser.close", nil, nil);
     for (int i = 0; i < 50 && waitpid(pid, NULL, WNOHANG) == 0; i++) usleep(100000);
     kill(pid, SIGKILL);
+    DPForgetApp([home stringByAppendingPathComponent:@"pristine/Dia.app"]);
     writeMessage(result);
     return 0;
 }

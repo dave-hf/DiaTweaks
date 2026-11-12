@@ -1,5 +1,4 @@
 #!/bin/sh
-# Builds DiaTweaks and installs it. --yes never asks anything.
 set -eu
 cd "$(dirname "$0")"
 case "${1-}" in
@@ -52,14 +51,19 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git remote get-url ups
     plutil -insert branch -string "$(git symbolic-ref -q --short HEAD || echo detached)" "$incoming/release.plist"
     plutil -insert dirty -bool "$([ -n "$(git status --porcelain --untracked-files=no)" ] && echo YES || echo NO)" "$incoming/release.plist"
 fi
+cp -R assets/app-icons "$incoming/"
 # Each rename is atomic, and Ctrl-C waits until all are done, so the installed files always come from one build.
 trap 'interrupted=1' INT TERM
 (
     trap '' INT TERM
     mv -f "$incoming/diapatch" ${cli:+"$incoming/diatweaks"} "$support/bin/"
     mv -f "$incoming/DiaPatches.dylib" "$incoming/patches.json" ${fork:+"$incoming/source.plist" "$incoming/release.plist"} "$support/"
-    # What's staged was built before this, and would replace it when Dia quits.
-    if [ -n "$fork" ]; then rm -rf "$support/staged/DiaTweaks" "$support/source-problem.plist"; else rm -f "$support/source.plist"; fi
+    rm -rf "$support/app-icons"
+    # A fork's release.plist names the commit it was built from. What's staged was built before this, and would replace
+    # it when Dia quits. Any other build from source isn't a release.
+    if [ -n "$fork" ]; then rm -rf "$support/staged/DiaTweaks" "$support/source-problem.plist"
+    else rm -f "$support/release.plist" "$support/source.plist"; fi
+    mv -f "$incoming/app-icons" "$support/"
 )
 [ -z "${interrupted-}" ] || exit 130
 trap 'exit 130' INT TERM

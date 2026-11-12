@@ -74,7 +74,7 @@ DP_PATCH(DPProfileColors) {
     .title = @"Profile Colors",
     .detail = @"Give a profile any color, not just Dia’s eight. Before Dia 1.56, also choose how strongly the window shows it. Set them in Settings › Profiles.",
     .symbol = @"paintpalette.fill paintpalette",
-    .tint = @"systemPinkColor",
+    .tint = @"systemTealColor",
     .section = @"Sidebar & Tab Bar",
     .classes = DPClasses(DPDiaWindowTint, DPDiaGradientView, DPDiaBackgroundColor, DPDiaSpaceSwitcher, DPDiaSpaceSwitcherItem,
                          DPDiaProfilePane, DPDiaSettingsFormGroup, DPDiaThemePicker, DPDiaThemeOption),

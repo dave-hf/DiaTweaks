@@ -4,7 +4,7 @@ extern DPPatch DPCompactSidebarHeader;
 static const CGFloat DPHeaderTrim = 10;
 static const CGFloat DPTopTabsButtonInset = 14;  // Where Dia puts the window buttons, from the window's corner, with tabs at the top.
 static NSHashTable<NSView *> *DPSidebars;
-static char DPHeaderFrameKey, DPButtonsFrameKey;
+static char DPHeaderFrameKey, DPButtonsFrameKey, DPRetriesKey;
 
 static NSRect DPLaidOutHeader(NSView *header) {
     return [DPDiaValue(header, &DPHeaderFrameKey, @(header.frame)) rectValue];
@@ -20,16 +20,25 @@ static NSRect DPCloseButtonInWindow(NSView *lights) {
 }
 
 // With tabs at the top Dia moves the window buttons into the corner; the compact header puts them in the same spot. A
-// sidebar floating over the page has them elsewhere, so only buttons already near the corner move.
+// sidebar floating over the page has them elsewhere, so only buttons already near the corner move. In full screen macOS
+// slides the buttons in with the menu bar, laying the header out each frame, so they stay where Dia puts them.
 static void DPHeader_layout(NSView *self, SEL _cmd) {
     DPCallOriginal(DPHeader_layout, self);
     NSView *lights = DPFindView(self, ^BOOL(NSView *v) { return DPIsKind(v, DPDiaTrafficLights); }), *row = lights.superview;
-    if (!lights || row == self) return;
+    if (!lights || row == self || !DPMayAdjust(row)) return;
     NSRect laidOut = [DPDiaValue(row, &DPButtonsFrameKey, @(row.frame)) rectValue], frame = laidOut;
     row.frame = laidOut;
     NSRect close = DPCloseButtonInWindow(lights);
     CGFloat dx = DPTopTabsButtonInset - NSMinX(close), dy = DPTopTabsButtonInset - NSMinY(close);
-    if (DPCompactSidebarHeader.on && !NSIsEmptyRect(close) && fabs(dx) <= 6 && fabs(dy) <= 6) {
+    BOOL fullScreen = (self.window.styleMask & NSWindowStyleMaskFullScreen) != 0;
+    // At launch Dia lays the header out before the window's buttons are in it, then not again until the sidebar changes.
+    NSUInteger retries = [DPGet(self, &DPRetriesKey) unsignedIntegerValue];
+    if (DPCompactSidebarHeader.on && NSIsEmptyRect(close) && self.window && retries < 8) {
+        DPSet(self, &DPRetriesKey, @(retries + 1));
+        __weak NSView *header = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 4), dispatch_get_main_queue(), ^{ header.needsLayout = YES; });
+    }
+    if (DPCompactSidebarHeader.on && !fullScreen && !NSIsEmptyRect(close) && fabs(dx) <= 6 && fabs(dy) <= 6) {
         frame.origin.x += dx;
         frame.origin.y += self.isFlipped ? dy : -dy;
     }
@@ -37,10 +46,9 @@ static void DPHeader_layout(NSView *self, SEL _cmd) {
     row.frame = frame;
 }
 
-// The pinned tabs move up into the empty space under the window buttons.
 static void DPCompactHeader(NSView *sidebar) {
     NSView *header = DPSubview(sidebar, DPDiaSidebarHeader);
-    if (!header) return;
+    if (!header || !DPMayAdjust(header)) return;
     NSRect laidOut = DPLaidOutHeader(header), frame = laidOut;
     if (DPCompactSidebarHeader.on) frame.size.height = MAX(0, NSHeight(laidOut) - DPHeaderTrim);
     DPOverride(header, &DPHeaderFrameKey, @(laidOut), @(frame));
@@ -77,7 +85,8 @@ static NSString *DPVerifyCompactSidebarHeader(DPPatch *patch) {
         NSView *lights = DPFindView(header, ^BOOL(NSView *v) { return DPIsKind(v, DPDiaTrafficLights); });
         NSRect close = lights ? DPCloseButtonInWindow(lights) : NSZeroRect;
         BOOL cornered = fabs(NSMinX(close) - DPTopTabsButtonInset) < 0.5 && fabs(NSMinY(close) - DPTopTabsButtonInset) < 0.5;
-        if (patch->on && !NSIsEmptyRect(close) && !cornered) return @"window buttons aren't where top tabs put them";
+        BOOL fullScreen = (header.window.styleMask & NSWindowStyleMaskFullScreen) != 0;
+        if (patch->on && !fullScreen && !NSIsEmptyRect(close) && !cornered) return @"window buttons aren't where top tabs put them";
     }
     return nil;
 }

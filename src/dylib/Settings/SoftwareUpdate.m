@@ -58,9 +58,10 @@ static NSButton *DPButton(NSString *title, id target, SEL action, NSString *part
 // Rebuilds only when something other than download progress changed, so buttons don't move under the pointer.
 - (void)sync {
     DPUpdates *updates = DPUpdates.shared;
-    NSMutableString *shape = [NSMutableString stringWithFormat:@"%d %d", updates.checking, updates.found != nil];
+    NSMutableString *shape = [NSMutableString stringWithFormat:@"%d %d %@", updates.checking, updates.found != nil, updates.checkProblem];
     for (NSString *part in self.shown)
-        [shape appendFormat:@" %@:%@:%@:%d:%@", part, [self stateOf:part], updates.found[part][@"latest"], [updates failed:part], updates.found[part][@"problem"]];
+        [shape appendFormat:@" %@:%@:%@:%d:%@:%@", part, [self stateOf:part], updates.found[part][@"latest"], [updates failed:part],
+                            [updates failure:part], updates.found[part][@"problem"]];
     for (NSString *part in @[DPDia, DPTweaks]) [shape appendFormat:@"%ld", DPAutoLevelOf(part)];
     if (![shape isEqual:_shape]) {
         _shape = shape;
@@ -84,6 +85,7 @@ static NSButton *DPButton(NSString *title, id target, SEL action, NSString *part
     DPUpdates *updates = DPUpdates.shared;
     NSMutableArray<NSView *> *views = [NSMutableArray new];
     NSArray<NSString *> *shown = self.shown;
+    NSString *unchecked = updates.found ? updates.checkProblem : @"Couldn’t check for updates";
 
     if (updates.checking && !shown.count) {
         NSProgressIndicator *spinner = [NSProgressIndicator new];
@@ -91,8 +93,8 @@ static NSButton *DPButton(NSString *title, id target, SEL action, NSString *part
         spinner.controlSize = NSControlSizeSmall;
         [spinner startAnimation:nil];
         [views addObject:DPGroup(@[DPRow(DPLine(@"Checking for updates…", 13, NSColor.labelColor), spinner)])];
-    } else if (!updates.found) {
-        [views addObject:DPGroup(@[DPRow(DPLine(@"Couldn’t check for updates", 13, NSColor.labelColor),
+    } else if (unchecked) {
+        [views addObject:DPGroup(@[DPRow(DPLine(unchecked, 13, NSColor.labelColor),
                                          [NSButton buttonWithTitle:@"Try Again" target:self action:@selector(checkAgain:)])])];
     } else if (!shown.count) {
         [views addObject:DPGroup(@[DPRow(DPLine(@"Everything is up to date", 13, NSColor.labelColor),
@@ -182,11 +184,12 @@ static NSButton *DPButton(NSString *title, id target, SEL action, NSString *part
     NSDictionary *found = updates.found[part];
     if (DPIsSource(found)) return [self sourceGroupFor:part];
     NSString *state = [self stateOf:part];
-    BOOL installsOnQuit = DPAutoLevelOf(part) == DPAutoInstall;
+    BOOL installsOnQuit = DPAutoLevelOf(part) == DPAutoInstall && !DPIsLocalBuild(part);
     NSString *size = [NSByteCountFormatter stringFromByteCount:[found[@"size"] longLongValue] countStyle:NSByteCountFormatterCountStyleFile];
     NSTextField *detail = DPLine([state isEqual:@"staged"] ? (installsOnQuit ? @"Installs when you quit" : @"Ready to install")
-                                 : [updates failed:part] ? @"Download failed" : size,
+                                 : [updates failed:part] ? ([updates failure:part] ?: @"Download failed") : size,
                                  11, [updates failed:part] ? NSColor.systemRedColor : NSColor.secondaryLabelColor);
+    if ([updates failed:part]) detail.toolTip = detail.stringValue;  // the line truncates
     NSStackView *leading = [NSStackView stackViewWithViews:@[
         DPPartIcon(part),
         DPColumn(@[DPLine([NSString stringWithFormat:@"%@ %@", DPPartName(part), found[@"latest"]], 13, NSColor.labelColor), detail], 2),
@@ -225,7 +228,14 @@ static NSButton *DPButton(NSString *title, id target, SEL action, NSString *part
     DPUpdates *updates = DPUpdates.shared;
     NSArray<NSString *> *parts = self.shown;
     __block NSUInteger left = parts.count;
-    void (^ready)(void) = ^{ if (--left == 0) [updates installAndRelaunch:parts]; };
+    // A part whose download failed shows why on the page, and quitting for it would only relaunch the same Dia.
+    void (^ready)(void) = ^{
+        if (--left != 0) return;
+        NSMutableArray<NSString *> *staged = [NSMutableArray new];
+        for (NSString *part in parts)
+            if ([updates staged:part]) [staged addObject:part];
+        if (staged.count) [updates installAndRelaunch:staged];
+    };
     for (NSString *part in parts) {
         if ([updates staged:part]) ready();
         else [updates download:part then:ready];

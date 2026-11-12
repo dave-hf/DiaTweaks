@@ -34,6 +34,12 @@ static NSMenu *DPMaterialChoices(void) {
     return menu;
 }
 
+// Liquid Glass needs NSGlassEffectView, which macOS 14 and 15 don't have, so they get Sidebar instead.
+static NSString *DPWindowMaterialChoice(void) {
+    NSString *choice = DPChoice(&DPWindowMaterial);
+    return [choice hasPrefix:@"glass."] && !NSClassFromString(@"NSGlassEffectView") ? [NSString stringWithFormat:@"material.%ld", (long)NSVisualEffectMaterialSidebar] : choice;
+}
+
 // Dia shows and hides these views too, so its last say is kept for when the patch lets go.
 static void DPView_setHidden(NSView *self, SEL _cmd, BOOL hidden) {
     DPSet(self, &DPDiaHiddenKey, @(hidden));
@@ -54,6 +60,12 @@ static void DPCollectEffects(NSView *view, NSMutableArray<NSVisualEffectView *> 
 
 static NSView *DPTintIn(NSView *view);
 
+// The tint is a white or black wash under a gradient of the profile's color. Only the wash hides the material.
+static NSView *DPWashIn(NSView *tint) {
+    for (NSView *view in tint.subviews) if (DPIsKind(view, DPDiaColorView)) return view;
+    return nil;
+}
+
 static NSVisualEffectMaterial DPWindowBackgroundMaterial(NSWindow *window) {
     NSView *effect = DPFindView(DPTintIn(window.contentView.superview).superview, ^BOOL(NSView *view) {
         return [view isKindOfClass:NSVisualEffectView.class] && !view.isHiddenOrHasHiddenAncestor;
@@ -65,7 +77,7 @@ static NSVisualEffectMaterial DPWindowBackgroundMaterial(NSWindow *window) {
 static void DPApplyMaterialUnder(NSView *tint, BOOL floating) {
     NSView *content = tint.superview;
     if (!content) return;
-    NSString *choice = DPWindowMaterial.on ? DPChoice(&DPWindowMaterial) : nil;
+    NSString *choice = DPWindowMaterial.on ? DPWindowMaterialChoice() : nil;
     BOOL translucent = choice || (floating && DPTranslucentSidebar.on), glass = [choice hasPrefix:@"glass."];
     NSInteger value = choice.pathExtension.integerValue;
 
@@ -87,7 +99,7 @@ static void DPApplyMaterialUnder(NSView *tint, BOOL floating) {
         effect.blendingMode = [ours[1] integerValue];
         effect.state = [ours[2] integerValue];
     }
-    DPHide(tint, translucent);
+    DPHide(DPWashIn(tint), translucent);
     for (NSView *view in backgrounds) DPHide(view, glass);
 
     // A drawn glass view ignores a new variant.
@@ -152,18 +164,20 @@ void DPApplyWindowMaterial(DPPatch *patch) {
 }
 
 NSString *DPVerifyWindowMaterial(DPPatch *patch) {
-    BOOL glass = DPWindowMaterial.on && [DPChoice(&DPWindowMaterial) hasPrefix:@"glass."];
+    BOOL glass = DPWindowMaterial.on && [DPWindowMaterialChoice() hasPrefix:@"glass."];
     NSArray<NSView *> *floating = DPFindViews(DPDiaFloatingSidebar);
     for (NSView *host in [DPWindowFrames() arrayByAddingObjectsFromArray:floating]) {
         NSView *tint = DPTintIn(host);
         BOOL translucent = DPWindowMaterial.on || (DPTranslucentSidebar.on && [floating containsObject:host]);
-        if (!tint) return @"no theme color to replace";
-        if (tint.hidden != translucent) return translucent ? @"theme color still shows" : @"theme color still hidden";
+        NSView *wash = DPWashIn(tint);
+        if (!wash) return @"no theme color to replace";
+        if (tint.hidden) return @"profile color hidden";
+        if (wash.hidden != translucent) return translucent ? @"theme color still shows" : @"theme color still hidden";
         if ((DPGet(tint.superview, &DPGlassKey) != nil) != glass) return glass ? @"no glass behind the window" : @"glass left behind";
         NSVisualEffectView *effect = (NSVisualEffectView *)DPFindView(tint.superview, ^BOOL(NSView *view) {
             return [view isKindOfClass:NSVisualEffectView.class] && !view.isHiddenOrHasHiddenAncestor;
         });
-        if (DPWindowMaterial.on && !glass && effect.material != DPChoice(&DPWindowMaterial).pathExtension.integerValue) return @"Dia's material came back";
+        if (DPWindowMaterial.on && !glass && effect.material != DPWindowMaterialChoice().pathExtension.integerValue) return @"Dia's material came back";
     }
     return nil;
 }
@@ -176,9 +190,9 @@ static void DPInstallWindowMaterial(void) {
 
 DP_PATCH(DPWindowMaterial) {
     .key = @"windowMaterial",
-    .order = 96,
+    .order = 99,
     .title = @"Window Material",
-    .detail = @"Show a material or Liquid Glass behind the tabs and sidebar instead of the theme color.",
+    .detail = @"Show a material or Liquid Glass behind the tabs and sidebar, still tinted with the profile’s color.",
     .symbol = @"circle.on.app.liquid.glass.fill square.2.layers.3d.top.filled",
     .tint = @"systemBrownColor",
     .section = @"Window",

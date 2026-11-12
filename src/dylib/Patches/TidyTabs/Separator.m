@@ -1,8 +1,6 @@
 #import "TidyTabs.h"
 
-// With pinned tabs in the list, Dia divides them from the rest with a line and a Close All button that shows while the
-// pointer is on the divider. The broom goes just left of Close All and shows and hides with it, and Dia's line shortens
-// to make room instead of a new row opening.
+// Dia's divider shows Close All while the pointer is on it; the broom shows and hides with it.
 static char DPLineFrameKey;
 static const CGFloat DPCloseAllGap = 4, DPLineGap = 6;
 
@@ -39,20 +37,43 @@ static void DPCloseAll_setHidden(NSView *self, SEL _cmd, BOOL hidden) {
     if (DPIsKind(self.superview, DPDiaTabListSeparator)) DPPlaceSeparatorBrush(self.superview);
 }
 
-// Tabs below the divider, or in the whole list without one, grouped ones included: rows of a tab's height, less the
-// New Tab row at the end. A group's own row is taller than a tab's, so it isn't counted.
+// Loose tabs below the line, from the layout, which knows off-screen rows too. Tab rows, folders, the New Tab row and a
+// group's own row are all about as tall as each other (and the height changes between Dia builds), so a row is a tab by
+// its cell's class where it has one. An off-screen row has no cell: it's a tab if it's the height of the others. A group's
+// tabs are rows inside the group's frame, so a row inside a taller row isn't loose.
 NSInteger DPTidyTabsBelowLine(NSView *list) {
     NSCollectionView *collection = (NSCollectionView *)DPTidyListScroll(list).documentView;
     if (![collection isKindOfClass:NSCollectionView.class]) return 0;
     NSView *separator = DPTidySeparatorIn(list);
     CGFloat line = separator ? NSMaxY([collection convertRect:separator.bounds fromView:separator]) - 0.5 : -CGFLOAT_MAX;
-    NSInteger rows = 0;
+    NSMutableArray<NSValue *> *frames = [NSMutableArray array];
+    NSMutableArray<NSNumber *> *isTab = [NSMutableArray array];  // YES, NO, or nil when not on screen.
+    NSCountedSet<NSNumber *> *heights = [NSCountedSet set];
     for (NSInteger section = 0; section < collection.numberOfSections; section++)
         for (NSInteger item = 0; item < [collection numberOfItemsInSection:section]; item++) {
-            NSRect frame = [collection.collectionViewLayout layoutAttributesForItemAtIndexPath:[NSIndexPath indexPathForItem:item inSection:section]].frame;
-            if (NSMinY(frame) >= line && NSHeight(frame) > 0 && NSHeight(frame) <= DPTidyTabRowHeight) rows++;
+            NSIndexPath *path = [NSIndexPath indexPathForItem:item inSection:section];
+            NSRect frame = [collection.collectionViewLayout layoutAttributesForItemAtIndexPath:path].frame;
+            if (NSMinY(frame) < line || NSHeight(frame) <= 0) continue;
+            NSView *cell = [collection itemAtIndexPath:path].view;
+            BOOL tab = cell && strstr(object_getClassName(cell), "TabUI7TabView");
+            // The New Tab row is last. Off screen it would pass for a tab.
+            if (!cell && section == collection.numberOfSections - 1 && item == [collection numberOfItemsInSection:section] - 1) continue;
+            [frames addObject:[NSValue valueWithRect:frame]];
+            [isTab addObject:cell ? @(tab) : (id)NSNull.null];
+            if (tab) [heights addObject:@(round(NSHeight(frame)))];
         }
-    return MAX(0, rows - 1);
+    NSNumber *height = nil;
+    for (NSNumber *each in heights) if (!height || [heights countForObject:each] > [heights countForObject:height]) height = each;
+    if (!height) return 0;
+    NSInteger loose = 0;
+    for (NSUInteger i = 0; i < frames.count; i++) {
+        NSRect frame = frames[i].rectValue;
+        if (isTab[i] == (id)NSNull.null ? fabs(NSHeight(frame) - height.doubleValue) > 1 : !isTab[i].boolValue) continue;
+        BOOL inside = NO;
+        for (NSValue *other in frames) inside |= NSHeight(other.rectValue) > NSHeight(frame) + 1 && NSPointInRect(NSMakePoint(NSMidX(frame), NSMidY(frame)), other.rectValue);
+        loose += !inside;
+    }
+    return loose;
 }
 
 static NSView *DPListOf(NSView *view) {
@@ -68,8 +89,7 @@ void DPPlaceSeparatorBrush(NSView *separator) {
         hooked = YES;
         DPHookClass(object_getClass(closeAll), @selector(setHidden:), (IMP)DPCloseAll_setHidden);
     }
-    // With Close All, while the pointer is on the divider, and only with enough tabs to tidy. While the model works
-    // the broom still comes and goes like this, and the wave fills the whole line whenever it's away.
+    // While busy the broom still follows Close All, and the wave fills the whole line when it's away.
     BOOL shown = DPTidyTabs.on && closeAll && !closeAll.hidden && (DPTidyIsBusy() || DPTidyTabsBelowLine(DPListOf(separator)) >= DPTidyMinimumTabs);
     DPTidyBrush *brush = DPBrushIn(separator, shown);
     CALayer *line = DPSeparatorLine(separator);
